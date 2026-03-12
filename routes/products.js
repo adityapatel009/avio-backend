@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { protect } = require('../middleware/auth');
 const Product = require('../models/Product');
 const SearchLog = require('../models/SearchLog');
 const { protect, adminOnly } = require('../middleware/auth');
