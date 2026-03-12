@@ -225,17 +225,7 @@ router.post('/:id/review', protect, async (req, res) => {
 // @access  Admin
 router.post('/', adminOnly, async (req, res) => {
   try {
-    const {
-      name, description, images, category,
-      meeshoPrice, sellingPrice, originalPrice,
-      stock, tags, isFeatured, isNewArrival
-    } = req.body;
-
-    const product = await Product.create({
-      name, description, images, category,
-      meeshoPrice, sellingPrice, originalPrice,
-      stock, tags, isFeatured, isNewArrival
-    });
+    const product = await Product.create(req.body);
 
     res.status(201).json({
       message: 'Product add ho gaya!',
