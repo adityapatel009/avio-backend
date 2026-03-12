@@ -9,6 +9,7 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const mongoose = require('mongoose');
 const User = mongoose.model('User');
 const SearchLog = require('../models/SearchLog');
+const { protect } = require('../middleware/auth');
 
 // ─── NODEMAILER SETUP ─────────────────────────────────────
 const transporter = nodemailer.createTransport({
