@@ -143,7 +143,8 @@ router.get('/search', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const product = await Product.findById(req.params.id)
-      .select('-meeshoPrice');
+      .select('-meeshoPrice')
+      .populate('variants.productId', 'name images sellingPrice variants');
 
     if (!product) {
       return res.status(404).json({ message: 'Product nahi mila' });
