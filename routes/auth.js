@@ -9,7 +9,7 @@ const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const mongoose = require('mongoose');
 const User = mongoose.model('User');
 const SearchLog = require('../models/SearchLog');
-const { protect } = require('../middleware/auth');
+
 
 // ─── NODEMAILER SETUP ─────────────────────────────────────
 const transporter = nodemailer.createTransport({
@@ -374,11 +374,16 @@ router.delete('/admin/users/:id', async (req, res) => {
 });
 
 // Update profile
-router.put('/update-profile', protect, async (req, res) => {
+router.put('/update-profile', async (req, res) => {
   try {
+    const token = req.headers.authorization?.split(' ')[1];
+    if (!token) return res.status(401).json({ message: 'Token nahi mila!' });
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    if (!decoded.id || decoded.id === 'admin')
+      return res.status(403).json({ message: 'Admin profile update nahi kar sakta!' });
     const { name, phone } = req.body;
     const user = await User.findByIdAndUpdate(
-      req.user._id,
+      decoded.id,
       { name, phone },
       { new: true }
     ).select('-password');
