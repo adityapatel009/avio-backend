@@ -18,6 +18,7 @@ router.get('/', async (req, res) => {
     let filter = {};
 
     if (category) filter.category = category;
+    if (req.query.subCategory) filter.subCategory = req.query.subCategory;
     if (minPrice || maxPrice) {
       filter.sellingPrice = {};
       if (minPrice) filter.sellingPrice.$gte = Number(minPrice);

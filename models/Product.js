@@ -26,6 +26,12 @@ const productSchema = new mongoose.Schema({
     ]
   },
 
+  // Sub category — mega menu ke according
+  subCategory: {
+    type: String,
+    default: ''
+  },
+
   // Size type — system ko batata hai konsa size chart use karo
   sizeType: {
     type: String,
@@ -61,13 +67,13 @@ const productSchema = new mongoose.Schema({
   isNewArrival: { type: Boolean, default: false },
   isTrending: { type: Boolean, default: false },
 
- averageRating: { type: Number, default: 0 },
+  averageRating: { type: Number, default: 0 },
   totalReviews: { type: Number, default: 0 },
 
   // Color Variants — linked products
   variants: [{
-    color: { type: String, required: true },  // "Red", "Blue"
-    colorCode: { type: String },               // "#FF0000" hex code
+    color: { type: String, required: true },
+    colorCode: { type: String },
     productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' }
   }]
 
