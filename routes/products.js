@@ -99,105 +99,125 @@ router.get('/featured', async (req, res) => {
 // @desc    Professional search — Atlas Search + Synonyms + Fallback
 // @access  Public
 // ─────────────────────────────────────────
+// SIRF YE SEARCH ROUTE REPLACE KARO — baaki sab same rahega
+
 router.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) return res.status(400).json({ message: 'Search query daalo' });
 
     const trimmedQ = q.trim();
+    const words = trimmedQ.split(/\s+/).filter(Boolean);
     let products = [];
 
-    // ── Step 1: Atlas Search (fuzzy + autocomplete) ──
+    // ── Step 1: Atlas Search ──
     try {
-      const atlasResults = await Product.aggregate([
-        {
-          $search: {
-            index: 'product_search',
-            compound: {
-              should: [
-                // Exact phrase — highest priority
-                {
-                  phrase: {
-                    query: trimmedQ,
-                    path: ['name', 'description', 'tags', 'subCategory'],
-                    score: { boost: { value: 5 } }
-                  }
-                },
-                // Fuzzy name match — typo tolerance
-                {
-                  text: {
-                    query: trimmedQ,
-                    path: 'name',
-                    fuzzy: { maxEdits: 1, prefixLength: 2 },
-                    score: { boost: { value: 4 } }
-                  }
-                },
-                // Tags match
-                {
-                  text: {
-                    query: trimmedQ,
-                    path: 'tags',
-                    fuzzy: { maxEdits: 1 },
-                    score: { boost: { value: 3 } }
-                  }
-                },
-                // SubCategory match
-                {
-                  text: {
-                    query: trimmedQ,
-                    path: 'subCategory',
-                    fuzzy: { maxEdits: 1 },
-                    score: { boost: { value: 3 } }
-                  }
-                },
-                // Description match
-                {
-                  text: {
-                    query: trimmedQ,
-                    path: 'description',
-                    score: { boost: { value: 1 } }
-                  }
-                },
-              ],
-              minimumShouldMatch: 1
-            }
+      let searchQuery;
+
+      if (words.length === 1) {
+        // Single word — fuzzy search on name, tags, subCategory only
+        searchQuery = {
+          compound: {
+            should: [
+              {
+                text: {
+                  query: trimmedQ,
+                  path: 'name',
+                  fuzzy: { maxEdits: 1, prefixLength: 2 },
+                  score: { boost: { value: 5 } }
+                }
+              },
+              {
+                text: {
+                  query: trimmedQ,
+                  path: 'tags',
+                  fuzzy: { maxEdits: 1 },
+                  score: { boost: { value: 4 } }
+                }
+              },
+              {
+                text: {
+                  query: trimmedQ,
+                  path: 'subCategory',
+                  fuzzy: { maxEdits: 1 },
+                  score: { boost: { value: 3 } }
+                }
+              },
+            ],
+            minimumShouldMatch: 1
           }
-        },
+        };
+      } else {
+        // Multi-word — MUST: saare words name/tags/subCategory mein hone chahiye
+        // "women shoes" = name ya tags mein "women" AND "shoes" dono hone chahiye
+        const mustClauses = words.map(word => ({
+          text: {
+            query: word,
+            path: ['name', 'tags', 'subCategory'],
+            fuzzy: { maxEdits: 1, prefixLength: 2 }
+          }
+        }));
+
+        searchQuery = {
+          compound: {
+            must: mustClauses,  // MUST — saare words match hone chahiye
+            should: [
+              // Exact phrase bonus score
+              {
+                phrase: {
+                  query: trimmedQ,
+                  path: 'name',
+                  score: { boost: { value: 5 } }
+                }
+              }
+            ]
+          }
+        };
+      }
+
+      const atlasResults = await Product.aggregate([
+        { $search: { index: 'product_search', ...searchQuery } },
         { $addFields: { searchScore: { $meta: 'searchScore' } } },
         { $sort: { searchScore: -1 } },
         { $limit: 20 },
         { $project: { meeshoPrice: 0 } }
       ]);
+
       products = atlasResults;
     } catch (atlasErr) {
       console.log('Atlas search failed, using fallback:', atlasErr.message);
     }
 
-    // ── Step 2: Synonyms + AND fallback ──
+    // ── Step 2: Fallback — AND regex (no category field) ──
     if (products.length === 0) {
-      const expandedTerms = expandQuery(trimmedQ);
-      const words = trimmedQ.split(/\s+/).filter(Boolean);
+      // Expand synonyms
+      const expandedWords = new Set(words);
+      words.forEach(word => {
+        const w = word.toLowerCase();
+        if (synonyms[w]) synonyms[w].forEach(s => expandedWords.add(s));
+        Object.entries(synonyms).forEach(([key, vals]) => {
+          if (vals.includes(w)) expandedWords.add(key);
+        });
+      });
 
-      // AND condition — saare words match hone chahiye (name/tags/subCategory only)
-      if (words.length > 1) {
-        const andConditions = words.map(word => ({
-          $or: [
-            { name: { $regex: word, $options: 'i' } },
-            { tags: { $in: [new RegExp(word, 'i')] } },
-            { subCategory: { $regex: word, $options: 'i' } },
-            { description: { $regex: word, $options: 'i' } },
-          ]
-        }));
-        products = await Product.find({ $and: andConditions }).select('-meeshoPrice').limit(20);
-      }
+      // AND — saare original words match hone chahiye
+      const andConditions = words.map(word => ({
+        $or: [
+          { name: { $regex: word, $options: 'i' } },
+          { tags: { $in: [new RegExp(word, 'i')] } },
+          { subCategory: { $regex: word, $options: 'i' } },
+        ]
+      }));
+      products = await Product.find({ $and: andConditions }).select('-meeshoPrice').limit(20);
 
-      // Synonyms se OR search
+      // Step 3: Synonyms OR fallback — sirf last specific word
       if (products.length === 0) {
-        const orConditions = expandedTerms.flatMap(term => [
+        const specificWord = words[words.length - 1]; // most specific word
+        const synonymExpanded = Array.from(expandedWords);
+        const orConditions = synonymExpanded.flatMap(term => [
           { name: { $regex: term, $options: 'i' } },
           { tags: { $in: [new RegExp(term, 'i')] } },
           { subCategory: { $regex: term, $options: 'i' } },
-          { description: { $regex: term, $options: 'i' } },
         ]);
         products = await Product.find({ $or: orConditions }).select('-meeshoPrice').limit(20);
       }
