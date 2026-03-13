@@ -113,16 +113,43 @@ router.get('/search', async (req, res) => {
     }
 
     // Search karo — name, description, tags mein
-    const products = await Product.find({
+    const words = q.trim().split(/\s+/).filter(Boolean);
+
+    // Step 1: Exact full phrase match (highest priority)
+    let products = await Product.find({
       $or: [
         { name: { $regex: q, $options: 'i' } },
         { description: { $regex: q, $options: 'i' } },
-        { tags: { $in: [new RegExp(q, 'i')] } },
-        { category: { $regex: q, $options: 'i' } },
         { subCategory: { $regex: q, $options: 'i' } },
-        { name: { $regex: q.split(' ').join('|'), $options: 'i' } }
+        { tags: { $in: [new RegExp(q, 'i')] } },
       ]
     }).select('-meeshoPrice').limit(20);
+
+    // Step 2: Saare words AND match — category field NAHI
+    if (products.length === 0) {
+      const andConditions = words.map(word => ({
+        $or: [
+          { name: { $regex: word, $options: 'i' } },
+          { description: { $regex: word, $options: 'i' } },
+          { tags: { $in: [new RegExp(word, 'i')] } },
+          { subCategory: { $regex: word, $options: 'i' } },
+        ]
+      }));
+      products = await Product.find({ $and: andConditions }).select('-meeshoPrice').limit(20);
+    }
+
+    // Step 3: Sirf last/most specific word se — category NAHI
+    if (products.length === 0) {
+      const specificWord = words[words.length - 1];
+      products = await Product.find({
+        $or: [
+          { name: { $regex: specificWord, $options: 'i' } },
+          { subCategory: { $regex: specificWord, $options: 'i' } },
+          { tags: { $in: [new RegExp(specificWord, 'i')] } },
+          { description: { $regex: specificWord, $options: 'i' } },
+        ]
+      }).select('-meeshoPrice').limit(20);
+    }
 
     // Search log silently save karo — analytics ke liye
     try {
