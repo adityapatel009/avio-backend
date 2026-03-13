@@ -11,13 +11,13 @@ const SearchLog = require('../models/SearchLog');;
 // ─────────────────────────────────────────
 router.get('/', async (req, res) => {
   try {
-    const { category, minPrice, maxPrice, rating, sort, page = 1, limit = 12 } = req.query;
+    const { category, subCategory, minPrice, maxPrice, rating, sort, page = 1, limit = 12 } = req.query;
 
     // Filter object banao
     let filter = {};
 
     if (category) filter.category = category;
-    if (req.query.subCategory) filter.subCategory = req.query.subCategory;
+    if (subCategory) filter.subCategory = subCategory;
     if (minPrice || maxPrice) {
       filter.sellingPrice = {};
       if (minPrice) filter.sellingPrice.$gte = Number(minPrice);
@@ -110,7 +110,9 @@ router.get('/search', async (req, res) => {
         { name: { $regex: q, $options: 'i' } },
         { description: { $regex: q, $options: 'i' } },
         { tags: { $in: [new RegExp(q, 'i')] } },
-        { category: { $regex: q, $options: 'i' } }
+        { category: { $regex: q, $options: 'i' } },
+        { subCategory: { $regex: q, $options: 'i' } },
+        { name: { $regex: q.split(' ').join('|'), $options: 'i' } }
       ]
     }).select('-meeshoPrice').limit(20);
 
