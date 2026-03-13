@@ -2,7 +2,15 @@ const express = require('express');
 const router = express.Router();
 const { protect, adminOnly } = require('../middleware/auth');
 const Product = require('../models/Product');
-const SearchLog = require('../models/SearchLog');;
+const SearchLog = require('../models/SearchLog');
+const Order = require('../models/Order');
+const User = require('../models/User');
+const nodemailer = require('nodemailer');
+
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: { user: process.env.GMAIL_USER, pass: process.env.GMAIL_APP_PASSWORD },
+});
 
 // ─────────────────────────────────────────
 // @route   GET /api/products
@@ -253,6 +261,61 @@ router.put('/:id', adminOnly, async (req, res) => {
 
     if (!product) {
       return res.status(404).json({ message: 'Product nahi mila' });
+    }
+
+    // ── Product wale orders dhundo, unke users ko email bhejo ──
+    try {
+      const orders = await Order.find({
+        'items.product': product._id,
+        status: { $in: ['Pending', 'Confirmed', 'Processing'] }
+      }).populate('customer', 'name email');
+
+      for (const order of orders) {
+        if (!order.customer?.email) continue;
+        await transporter.sendMail({
+          from: `"Avio ✨" <${process.env.GMAIL_USER}>`,
+          to: order.customer.email,
+          subject: `🔔 Product Update — Your Order #${order.orderId} | Avio`,
+          html: `
+            <!DOCTYPE html><html><head><meta charset="UTF-8"></head>
+            <body style="margin:0;padding:0;background:#0f0f1a;font-family:Arial,sans-serif;">
+              <div style="max-width:560px;margin:40px auto;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:16px;overflow:hidden;">
+                <div style="background:linear-gradient(135deg,#6C3AE8,#C084FC);padding:28px;text-align:center;">
+                  <div style="font-size:16px;font-weight:900;letter-spacing:4px;color:#fff;margin-bottom:4px;">AVIO</div>
+                  <div style="height:2px;width:40px;background:#fff;border-radius:2px;margin:0 auto 12px;"></div>
+                  <h1 style="color:#fff;margin:0;font-size:22px;">Product Updated 🔔</h1>
+                  <p style="color:rgba(255,255,255,0.8);margin:6px 0 0;font-size:13px;">Everything Love, One Place</p>
+                </div>
+                <div style="padding:28px;">
+                  <p style="color:#aaa;font-size:14px;margin:0 0 20px;">
+                    Hi <strong style="color:#fff;">${order.customer.name}</strong>, a product in your order <strong style="color:#C084FC;">#${order.orderId}</strong> has been updated by Avio.
+                  </p>
+                  <div style="background:#12121E;border:1px solid #6C3AE8;border-radius:12px;padding:16px;margin-bottom:20px;display:flex;align-items:center;gap:14px;">
+                    ${product.images?.[0] ? `<img src="${product.images[0]}" width="60" height="60" style="border-radius:10px;object-fit:cover;" />` : ''}
+                    <div>
+                      <p style="color:#fff;font-size:14px;font-weight:bold;margin:0 0 4px;">${product.name}</p>
+                      <p style="color:#C084FC;font-size:13px;margin:0;">₹${product.sellingPrice}</p>
+                    </div>
+                  </div>
+                  <p style="color:#aaa;font-size:13px;margin:0 0 20px;">
+                    If you have any questions about your order, feel free to contact us at <a href="mailto:support@avio.in" style="color:#C084FC;">support@avio.in</a>
+                  </p>
+                  <div style="text-align:center;">
+                    <a href="${process.env.FRONTEND_URL}/orders" style="display:inline-block;background:linear-gradient(135deg,#6C3AE8,#C084FC);color:#fff;padding:12px 28px;border-radius:10px;font-weight:bold;font-size:13px;text-decoration:none;">
+                      View My Orders
+                    </a>
+                  </div>
+                </div>
+                <div style="background:#12121E;padding:20px;text-align:center;border-top:1px solid #2a2a3e;">
+                  <p style="color:#555;font-size:12px;margin:0;">© 2026 Avio. Made with ❤️ in India</p>
+                </div>
+              </div>
+            </body></html>
+          `,
+        });
+      }
+    } catch (emailErr) {
+      console.log('Product update email error:', emailErr.message);
     }
 
     res.json({ message: 'Product update ho gaya!', product });
