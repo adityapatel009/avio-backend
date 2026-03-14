@@ -71,55 +71,61 @@ const getAutoDeal = async () => {
 // @route   GET /api/products/deal-of-day
 // @access  Public
 // ─────────────────────────────────────────
+// routes/products.js mein SIRF deal-of-day GET route replace karo
+// Dhundo: router.get('/deal-of-day', async (req, res) => {
+// Poora route replace karo is se:
+
 router.get('/deal-of-day', async (req, res) => {
   try {
-    // Check if existing deal expired
+    // Expired check
     if (dealOfDay && new Date(dealOfDay.endsAt) < new Date()) {
       dealOfDay = null;
     }
+    // Sirf admin set deal dikhao — auto deal nahi
+    if (!dealOfDay) return res.json({ deal: null });
 
-    // Admin ne set kiya hua hai?
-    if (dealOfDay) {
-      const product = await Product.findById(dealOfDay.productId).select('-meeshoPrice');
-      if (!product) { dealOfDay = null; }
-      else {
-        return res.json({
-          deal: { ...dealOfDay, product },
-          endsAt: dealOfDay.endsAt,
-        });
-      }
+    const product = await Product.findById(dealOfDay.productId).select('-meeshoPrice');
+    if (!product) {
+      dealOfDay = null;
+      return res.json({ deal: null });
     }
-
-    // Auto deal
-    const auto = await getAutoDetail();
-    if (!auto) return res.json({ deal: null });
-
-    res.json({ deal: auto, endsAt: auto.endsAt });
+    res.json({ deal: { ...dealOfDay, product }, endsAt: dealOfDay.endsAt });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// Helper — auto deal fetch
-async function getAutoDetail() {
+// Spin wheel on/off + prizes — in-memory store
+// Ye bhi products.js mein add karo — deal-of-day routes ke paas
+
+let spinWheelConfig = {
+  isActive: true,
+  prizes: [
+    { label: '5% OFF', code: 'SPIN5', discount: 5, type: 'percent', color: '#6C3AE8', probability: 30 },
+    { label: '10% OFF', code: 'SPIN10', discount: 10, type: 'percent', color: '#C084FC', probability: 25 },
+    { label: 'Free Delivery', code: 'FREEDEL', discount: 49, type: 'flat', color: '#22C55E', probability: 20 },
+    { label: '15% OFF', code: 'SPIN15', discount: 15, type: 'percent', color: '#F97316', probability: 12 },
+    { label: '20% OFF', code: 'SPIN20', discount: 20, type: 'percent', color: '#EAB308', probability: 8 },
+    { label: 'Better Luck!', code: null, discount: 0, type: 'none', color: '#4B5563', probability: 5 },
+  ]
+};
+
+// GET spin config
+router.get('/spin-config', async (req, res) => {
+  res.json({ config: spinWheelConfig });
+});
+
+// POST spin config — admin
+router.post('/spin-config', adminOnly, async (req, res) => {
   try {
-    const product = await Product.findOne({
-      stock: { $gt: 0 },
-      originalPrice: { $gt: 0 },
-      $expr: { $gt: ['$originalPrice', '$sellingPrice'] }
-    }).sort({ averageRating: -1, viewCount: -1 }).select('-meeshoPrice');
-    if (!product) return null;
-    const midnight = new Date();
-    midnight.setHours(23, 59, 59, 999);
-    return {
-      productId: product._id.toString(),
-      dealPrice: Math.round(product.sellingPrice * 0.85),
-      endsAt: midnight.toISOString(),
-      setBy: 'auto',
-      product,
-    };
-  } catch { return null; }
-}
+    const { isActive, prizes } = req.body;
+    if (typeof isActive === 'boolean') spinWheelConfig.isActive = isActive;
+    if (prizes && Array.isArray(prizes)) spinWheelConfig.prizes = prizes;
+    res.json({ message: 'Spin config update ho gaya!', config: spinWheelConfig });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
 
 // ─────────────────────────────────────────
 // @route   POST /api/products/deal-of-day
