@@ -239,7 +239,11 @@ router.put('/:id/status', adminOnly, async (req, res) => {
     if (expectedDelivery) order.expectedDelivery = expectedDelivery;
     if (meeshoOrderId) order.meeshoOrderId = meeshoOrderId;
     await order.save();
-    if (order.customer?.email) sendStatusUpdateEmail(order.customer.email, order.customer.name, order, note);
+    if (order.customer?.email) {
+  console.log('📧 Email bhej raha hoon:', order.customer.email);
+  await sendStatusUpdateEmail(order.customer.email, order.customer.name, order, note);
+  console.log('📧 Email bhej diya!');
+}
     res.json({ message: `Order ${status} ho gaya!`, order });
   } catch (error) { res.status(500).json({ message: 'Server error', error: error.message }); }
 });
