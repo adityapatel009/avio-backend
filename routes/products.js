@@ -30,19 +30,139 @@ const synonyms = {
   'earphone': ['earbuds', 'headphone', 'airpods', 'earpods'],
 };
 
-// Query expand karo synonyms se
 const expandQuery = (q) => {
   const words = q.toLowerCase().trim().split(/\s+/);
   const expanded = new Set(words);
   words.forEach(word => {
     if (synonyms[word]) synonyms[word].forEach(s => expanded.add(s));
-    // Reverse check
     Object.entries(synonyms).forEach(([key, vals]) => {
       if (vals.includes(word)) expanded.add(key);
     });
   });
   return Array.from(expanded);
 };
+
+// ─── IN-MEMORY DEAL OF DAY STORE ──────────────────────────
+// { productId, dealPrice, endsAt, setBy: 'admin'|'auto' }
+let dealOfDay = null;
+
+const getAutoDeal = async () => {
+  try {
+    // Top rated ya trending product select karo
+    const product = await Product.findOne({
+      stock: { $gt: 0 },
+      originalPrice: { $exists: true },
+      $expr: { $gt: ['$originalPrice', '$sellingPrice'] }
+    }).sort({ averageRating: -1, viewCount: -1 }).select('-meeshoPrice');
+    if (!product) return null;
+    const midnight = new Date();
+    midnight.setHours(23, 59, 59, 999);
+    return {
+      productId: product._id.toString(),
+      dealPrice: Math.round(product.sellingPrice * 0.85), // extra 15% off
+      endsAt: midnight.toISOString(),
+      setBy: 'auto',
+      product,
+    };
+  } catch { return null; }
+};
+
+// ─────────────────────────────────────────
+// @route   GET /api/products/deal-of-day
+// @access  Public
+// ─────────────────────────────────────────
+router.get('/deal-of-day', async (req, res) => {
+  try {
+    // Check if existing deal expired
+    if (dealOfDay && new Date(dealOfDay.endsAt) < new Date()) {
+      dealOfDay = null;
+    }
+
+    // Admin ne set kiya hua hai?
+    if (dealOfDay) {
+      const product = await Product.findById(dealOfDay.productId).select('-meeshoPrice');
+      if (!product) { dealOfDay = null; }
+      else {
+        return res.json({
+          deal: { ...dealOfDay, product },
+          endsAt: dealOfDay.endsAt,
+        });
+      }
+    }
+
+    // Auto deal
+    const auto = await getAutoDetail();
+    if (!auto) return res.json({ deal: null });
+
+    res.json({ deal: auto, endsAt: auto.endsAt });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// Helper — auto deal fetch
+async function getAutoDetail() {
+  try {
+    const product = await Product.findOne({
+      stock: { $gt: 0 },
+      originalPrice: { $gt: 0 },
+      $expr: { $gt: ['$originalPrice', '$sellingPrice'] }
+    }).sort({ averageRating: -1, viewCount: -1 }).select('-meeshoPrice');
+    if (!product) return null;
+    const midnight = new Date();
+    midnight.setHours(23, 59, 59, 999);
+    return {
+      productId: product._id.toString(),
+      dealPrice: Math.round(product.sellingPrice * 0.85),
+      endsAt: midnight.toISOString(),
+      setBy: 'auto',
+      product,
+    };
+  } catch { return null; }
+}
+
+// ─────────────────────────────────────────
+// @route   POST /api/products/deal-of-day
+// @desc    Admin — Deal of Day set karo
+// @access  Admin
+// ─────────────────────────────────────────
+router.post('/deal-of-day', adminOnly, async (req, res) => {
+  try {
+    const { productId, dealPrice } = req.body;
+    if (!productId || !dealPrice) return res.status(400).json({ message: 'productId aur dealPrice zaroori hai' });
+
+    const product = await Product.findById(productId).select('-meeshoPrice');
+    if (!product) return res.status(404).json({ message: 'Product nahi mila' });
+
+    const midnight = new Date();
+    midnight.setHours(23, 59, 59, 999);
+
+    dealOfDay = {
+      productId,
+      dealPrice: Number(dealPrice),
+      endsAt: midnight.toISOString(),
+      setBy: 'admin',
+    };
+
+    res.json({ message: 'Deal of Day set ho gaya! 🔥', deal: { ...dealOfDay, product } });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
+
+// ─────────────────────────────────────────
+// @route   DELETE /api/products/deal-of-day
+// @desc    Admin — Deal of Day remove karo
+// @access  Admin
+// ─────────────────────────────────────────
+router.delete('/deal-of-day', adminOnly, async (req, res) => {
+  try {
+    dealOfDay = null;
+    res.json({ message: 'Deal of Day remove ho gaya!' });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+});
 
 // ─────────────────────────────────────────
 // @route   GET /api/products
@@ -94,87 +214,37 @@ router.get('/featured', async (req, res) => {
   }
 });
 
-// ─────────────────────────────────────────
-// @route   GET /api/products/search
-// @desc    Professional search — Atlas Search + Synonyms + Fallback
-// @access  Public
-// ─────────────────────────────────────────
-// SIRF YE SEARCH ROUTE REPLACE KARO — baaki sab same rahega
-
 router.get('/search', async (req, res) => {
   try {
     const { q } = req.query;
     if (!q) return res.status(400).json({ message: 'Search query daalo' });
-
     const trimmedQ = q.trim();
     const words = trimmedQ.split(/\s+/).filter(Boolean);
     let products = [];
-
-    // ── Step 1: Atlas Search ──
     try {
       let searchQuery;
-
       if (words.length === 1) {
-        // Single word — fuzzy search on name, tags, subCategory only
         searchQuery = {
           compound: {
             should: [
-              {
-                text: {
-                  query: trimmedQ,
-                  path: 'name',
-                  fuzzy: { maxEdits: 1, prefixLength: 2 },
-                  score: { boost: { value: 5 } }
-                }
-              },
-              {
-                text: {
-                  query: trimmedQ,
-                  path: 'tags',
-                  fuzzy: { maxEdits: 1 },
-                  score: { boost: { value: 4 } }
-                }
-              },
-              {
-                text: {
-                  query: trimmedQ,
-                  path: 'subCategory',
-                  fuzzy: { maxEdits: 1 },
-                  score: { boost: { value: 3 } }
-                }
-              },
+              { text: { query: trimmedQ, path: 'name', fuzzy: { maxEdits: 1, prefixLength: 2 }, score: { boost: { value: 5 } } } },
+              { text: { query: trimmedQ, path: 'tags', fuzzy: { maxEdits: 1 }, score: { boost: { value: 4 } } } },
+              { text: { query: trimmedQ, path: 'subCategory', fuzzy: { maxEdits: 1 }, score: { boost: { value: 3 } } } },
             ],
             minimumShouldMatch: 1
           }
         };
       } else {
-        // Multi-word — MUST: saare words name/tags/subCategory mein hone chahiye
-        // "women shoes" = name ya tags mein "women" AND "shoes" dono hone chahiye
         const mustClauses = words.map(word => ({
-          text: {
-            query: word,
-            path: ['name', 'tags', 'subCategory'],
-            fuzzy: { maxEdits: 1, prefixLength: 2 }
-          }
+          text: { query: word, path: ['name', 'tags', 'subCategory'], fuzzy: { maxEdits: 1, prefixLength: 2 } }
         }));
-
         searchQuery = {
           compound: {
-            must: mustClauses,  // MUST — saare words match hone chahiye
-            should: [
-              // Exact phrase bonus score
-              {
-                phrase: {
-                  query: trimmedQ,
-                  path: 'name',
-                  score: { boost: { value: 5 } }
-                }
-              }
-            ]
+            must: mustClauses,
+            should: [{ phrase: { query: trimmedQ, path: 'name', score: { boost: { value: 5 } } } }]
           }
         };
       }
-
       const atlasResults = await Product.aggregate([
         { $search: { index: 'product_search', ...searchQuery } },
         { $addFields: { searchScore: { $meta: 'searchScore' } } },
@@ -182,25 +252,17 @@ router.get('/search', async (req, res) => {
         { $limit: 20 },
         { $project: { meeshoPrice: 0 } }
       ]);
-
       products = atlasResults;
     } catch (atlasErr) {
       console.log('Atlas search failed, using fallback:', atlasErr.message);
     }
-
-    // ── Step 2: Fallback — AND regex (no category field) ──
     if (products.length === 0) {
-      // Expand synonyms
       const expandedWords = new Set(words);
       words.forEach(word => {
         const w = word.toLowerCase();
         if (synonyms[w]) synonyms[w].forEach(s => expandedWords.add(s));
-        Object.entries(synonyms).forEach(([key, vals]) => {
-          if (vals.includes(w)) expandedWords.add(key);
-        });
+        Object.entries(synonyms).forEach(([key, vals]) => { if (vals.includes(w)) expandedWords.add(key); });
       });
-
-      // AND — saare original words match hone chahiye
       const andConditions = words.map(word => ({
         $or: [
           { name: { $regex: word, $options: 'i' } },
@@ -209,10 +271,7 @@ router.get('/search', async (req, res) => {
         ]
       }));
       products = await Product.find({ $and: andConditions }).select('-meeshoPrice').limit(20);
-
-      // Step 3: Synonyms OR fallback — sirf last specific word
       if (products.length === 0) {
-        const specificWord = words[words.length - 1]; // most specific word
         const synonymExpanded = Array.from(expandedWords);
         const orConditions = synonymExpanded.flatMap(term => [
           { name: { $regex: term, $options: 'i' } },
@@ -222,59 +281,30 @@ router.get('/search', async (req, res) => {
         products = await Product.find({ $or: orConditions }).select('-meeshoPrice').limit(20);
       }
     }
-
-    // Search log
     try {
-      await SearchLog.create({
-        keyword: trimmedQ.toLowerCase(),
-        userId: req.user ? req.user._id : null,
-        resultsFound: products.length
-      });
+      await SearchLog.create({ keyword: trimmedQ.toLowerCase(), userId: req.user ? req.user._id : null, resultsFound: products.length });
     } catch (logErr) {}
-
     res.json({ products, totalFound: products.length, keyword: trimmedQ });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
-// ─────────────────────────────────────────
-// @route   GET /api/products/autocomplete
-// @desc    Search bar suggestions
-// @access  Public
-// ─────────────────────────────────────────
 router.get('/autocomplete', async (req, res) => {
   try {
     const { q } = req.query;
     if (!q || q.length < 2) return res.json({ suggestions: [] });
-
     let suggestions = [];
-
-    // Atlas autocomplete
     try {
       const results = await Product.aggregate([
-        {
-          $search: {
-            index: 'product_search',
-            autocomplete: {
-              query: q,
-              path: 'name',
-              fuzzy: { maxEdits: 1 },
-              tokenOrder: 'sequential'
-            }
-          }
-        },
+        { $search: { index: 'product_search', autocomplete: { query: q, path: 'name', fuzzy: { maxEdits: 1 }, tokenOrder: 'sequential' } } },
         { $limit: 6 },
         { $project: { name: 1, images: 1, sellingPrice: 1, category: 1, subCategory: 1 } }
       ]);
       suggestions = results;
     } catch (atlasErr) {
-      // Fallback
-      suggestions = await Product.find({
-        name: { $regex: q, $options: 'i' }
-      }).limit(6).select('name images sellingPrice category subCategory');
+      suggestions = await Product.find({ name: { $regex: q, $options: 'i' } }).limit(6).select('name images sellingPrice category subCategory');
     }
-
     res.json({ suggestions });
   } catch (error) {
     res.status(500).json({ suggestions: [] });
@@ -310,8 +340,6 @@ router.post('/:id/review', protect, async (req, res) => {
   }
 });
 
-// ─── ADMIN ROUTES ─────────────────────────────────────────
-
 router.post('/', adminOnly, async (req, res) => {
   try {
     const product = await Product.create(req.body);
@@ -325,49 +353,21 @@ router.put('/:id', adminOnly, async (req, res) => {
   try {
     const product = await Product.findByIdAndUpdate(req.params.id, req.body, { new: true });
     if (!product) return res.status(404).json({ message: 'Product nahi mila' });
-
-    // Email to affected order customers
     try {
       const orders = await Order.find({
         'items.product': product._id,
         status: { $in: ['Pending', 'Confirmed', 'Processing'] }
       }).populate('customer', 'name email');
-
       for (const order of orders) {
         if (!order.customer?.email) continue;
         await transporter.sendMail({
           from: `"Avio ✨" <${process.env.GMAIL_USER}>`,
           to: order.customer.email,
           subject: `🔔 Product Update — Your Order #${order.orderId} | Avio`,
-          html: `
-            <body style="margin:0;padding:0;background:#0f0f1a;font-family:Arial,sans-serif;">
-              <div style="max-width:560px;margin:40px auto;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:16px;overflow:hidden;">
-                <div style="background:linear-gradient(135deg,#6C3AE8,#C084FC);padding:28px;text-align:center;">
-                  <div style="font-size:16px;font-weight:900;letter-spacing:4px;color:#fff;">AVIO</div>
-                  <h1 style="color:#fff;margin:8px 0 0;font-size:22px;">Product Updated 🔔</h1>
-                </div>
-                <div style="padding:28px;">
-                  <p style="color:#aaa;font-size:14px;">Hi <strong style="color:#fff;">${order.customer.name}</strong>, a product in your order <strong style="color:#C084FC;">#${order.orderId}</strong> has been updated.</p>
-                  <div style="background:#12121E;border:1px solid #6C3AE8;border-radius:12px;padding:16px;margin:20px 0;">
-                    <p style="color:#fff;font-size:14px;font-weight:bold;margin:0 0 4px;">${product.name}</p>
-                    <p style="color:#C084FC;font-size:13px;margin:0;">₹${product.sellingPrice}</p>
-                  </div>
-                  <div style="text-align:center;">
-                    <a href="${process.env.FRONTEND_URL}/orders" style="display:inline-block;background:linear-gradient(135deg,#6C3AE8,#C084FC);color:#fff;padding:12px 28px;border-radius:10px;font-weight:bold;text-decoration:none;">View My Orders</a>
-                  </div>
-                </div>
-                <div style="background:#12121E;padding:16px;text-align:center;border-top:1px solid #2a2a3e;">
-                  <p style="color:#555;font-size:12px;margin:0;">© 2026 Avio. Made with ❤️ in India</p>
-                </div>
-              </div>
-            </body>
-          `,
+          html: `<body style="margin:0;padding:0;background:#0f0f1a;font-family:Arial,sans-serif;"><div style="max-width:560px;margin:40px auto;background:#1a1a2e;border:1px solid #2a2a3e;border-radius:16px;overflow:hidden;"><div style="background:linear-gradient(135deg,#6C3AE8,#C084FC);padding:28px;text-align:center;"><div style="font-size:16px;font-weight:900;letter-spacing:4px;color:#fff;">AVIO</div><h1 style="color:#fff;margin:8px 0 0;font-size:22px;">Product Updated 🔔</h1></div><div style="padding:28px;"><p style="color:#aaa;font-size:14px;">Hi <strong style="color:#fff;">${order.customer.name}</strong>, a product in your order <strong style="color:#C084FC;">#${order.orderId}</strong> has been updated.</p><div style="background:#12121E;border:1px solid #6C3AE8;border-radius:12px;padding:16px;margin:20px 0;"><p style="color:#fff;font-size:14px;font-weight:bold;margin:0 0 4px;">${product.name}</p><p style="color:#C084FC;font-size:13px;margin:0;">₹${product.sellingPrice}</p></div><div style="text-align:center;"><a href="${process.env.FRONTEND_URL}/orders" style="display:inline-block;background:linear-gradient(135deg,#6C3AE8,#C084FC);color:#fff;padding:12px 28px;border-radius:10px;font-weight:bold;text-decoration:none;">View My Orders</a></div></div><div style="background:#12121E;padding:16px;text-align:center;border-top:1px solid #2a2a3e;"><p style="color:#555;font-size:12px;margin:0;">© 2026 Avio. Made with ❤️ in India</p></div></div></body>`,
         });
       }
-    } catch (emailErr) {
-      console.log('Product update email error:', emailErr.message);
-    }
-
+    } catch (emailErr) { console.log('Product update email error:', emailErr.message); }
     res.json({ message: 'Product update ho gaya!', product });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
